@@ -66,7 +66,10 @@ function save(blob){
   document.body.appendChild(a); a.click(); a.remove();
 }
 
+let busy = false;
 async function start(file){
+  if (busy) { log('ignored extra drop — already converting'); return; }
+  busy = true;
   try {
     setStatus('PHASE:READ — reading ' + file.name + ' (' + (file.size/1048576).toFixed(1) + ' MB)');
     bar.style.display = 'block';
@@ -92,15 +95,40 @@ async function start(file){
       const count = g.index ? g.index.count : (g.attributes.position ? g.attributes.position.count : 0);
       if (count >= 3) meshes.push(o);
     });
+    // sanitize materials: drop textures (Rhino embedded bitmaps don't survive export), keep colors
+    const matCache = new Map();
+    function cleanMaterial(mt){
+      const key = mt ? mt.uuid : 'none';
+      if (matCache.has(key)) return matCache.get(key);
+      const hasVC = !!(mt && mt.vertexColors);
+      const out = new THREE.MeshStandardMaterial({
+        color: (mt && mt.color) ? mt.color.clone() : new THREE.Color(0xcccccc),
+        roughness: (mt && typeof mt.roughness === 'number') ? mt.roughness : 0.8,
+        metalness: (mt && typeof mt.metalness === 'number') ? mt.metalness : 0.0,
+        side: THREE.DoubleSide,
+        vertexColors: hasVC
+      });
+      if (mt && mt.transparent && mt.opacity < 1) { out.transparent = true; out.opacity = mt.opacity; }
+      if (mt && mt.name) out.name = mt.name;
+      matCache.set(key, out);
+      return out;
+    }
     let tris = 0;
     const group = new THREE.Group();
     for (const m of meshes) {
       const g = m.geometry;
+      // keep only position/normal(/color when used) — drop uv etc. referencing dead textures
+      const mat = Array.isArray(m.material) ? cleanMaterial(m.material[0]) : cleanMaterial(m.material);
+      for (const name of Object.keys(g.attributes)) {
+        if (name === 'position' || name === 'normal') continue;
+        if (name === 'color' && mat.vertexColors) continue;
+        g.deleteAttribute(name);
+      }
+      if (!g.attributes.normal) g.computeVertexNormals();
+      g.clearGroups();
       tris += (g.index ? g.index.count : g.attributes.position.count) / 3;
-      const clone = new THREE.Mesh(g, m.material);
+      const clone = new THREE.Mesh(g, mat);
       clone.applyMatrix4(m.matrixWorld);
-      if (Array.isArray(clone.material)) clone.material.forEach(mt => mt.side = THREE.DoubleSide);
-      else if (clone.material) clone.material.side = THREE.DoubleSide;
       group.add(clone);
     }
     if (meshes.length === 0 || tris === 0) {
@@ -158,9 +186,11 @@ async function start(file){
     setStatus('DONE — ld-villa.glb (' + (out.byteLength/1048576).toFixed(2) + ' MB) saved to your Downloads folder. Source: ' + meshes.length + ' meshes, ' + Math.round(tris).toLocaleString() + ' triangles.');
   } catch (e) {
     fail('conversion failed', e);
+  } finally {
+    busy = false;
   }
 }
-setStatus('READY — waiting for file');
+setStatus('READY v2 — waiting for file');
 </script>
 </body>
 </html>
