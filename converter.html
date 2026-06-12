@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>L&amp;D Villa — 3DM → GLB Converter</title>
+<style>
+  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#16181d;color:#e8e9eb}
+  #drop{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;border:3px dashed #3a3f4a;margin:24px;border-radius:16px;transition:all .15s}
+  #drop.hover{border-color:#7aa2ff;background:#1b2130}
+  h1{font-size:20px;font-weight:600;margin:0}
+  p{margin:0;color:#9aa1ad;font-size:14px;max-width:520px;text-align:center;line-height:1.5}
+  #status{font-size:15px;font-weight:600;color:#7aa2ff;white-space:pre-wrap;text-align:center;max-width:640px}
+  #log{position:fixed;left:24px;bottom:24px;right:24px;max-height:30vh;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:#6f7682;margin:0}
+  button,label.btn{background:#2d6cdf;color:#fff;border:0;border-radius:8px;padding:10px 22px;font-size:14px;font-weight:600;cursor:pointer}
+  input[type=file]{display:none}
+  #bar{width:320px;height:6px;background:#262a33;border-radius:3px;overflow:hidden;display:none}
+  #fill{height:100%;width:0%;background:#7aa2ff;transition:width .2s}
+</style>
+</head>
+<body>
+<div id="drop">
+  <h1>L&amp;D Villa — Rhino → Web Converter</h1>
+  <p>Drag &amp; drop the <b>260112_L&amp;D Villa.3dm</b> file anywhere on this page (or click below).
+     It is converted locally in your browser — nothing is uploaded to a server.
+     The compressed <b>ld-villa.glb</b> downloads automatically when done.</p>
+  <label class="btn">Choose .3dm file<input type="file" id="file" accept=".3dm"></label>
+  <div id="bar"><div id="fill"></div></div>
+  <div id="status">STATUS: READY — waiting for file</div>
+  <button id="dl" style="display:none">Download ld-villa.glb again</button>
+</div>
+<pre id="log"></pre>
+
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { Rhino3dmLoader } from 'three/addons/loaders/3DMLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+const statusEl = document.getElementById('status');
+const logEl = document.getElementById('log');
+const fill = document.getElementById('fill');
+const bar = document.getElementById('bar');
+let lastBlob = null;
+
+function log(m){ logEl.textContent += m + '\n'; logEl.scrollTop = logEl.scrollHeight; console.log('[CONV]', m); }
+function setStatus(m){ statusEl.textContent = 'STATUS: ' + m; log(m); }
+function fail(m, e){ setStatus('ERROR: ' + m + (e ? ' :: ' + (e.message || e) : '')); console.error(e); }
+
+const drop = document.getElementById('drop');
+['dragover','dragenter'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('hover'); }));
+['dragleave','drop'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('hover'); }));
+document.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) start(f); });
+document.getElementById('file').addEventListener('change', e => { const f = e.target.files[0]; if (f) start(f); });
+document.getElementById('dl').addEventListener('click', () => lastBlob && save(lastBlob));
+
+function save(blob){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'ld-villa.glb';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+async function start(file){
+  try {
+    setStatus('PHASE:READ — reading ' + file.name + ' (' + (file.size/1048576).toFixed(1) + ' MB)');
+    bar.style.display = 'block';
+    const buf = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onprogress = e => { if (e.total) fill.style.width = (e.loaded/e.total*100).toFixed(0) + '%'; };
+      r.onload = () => res(r.result);
+      r.onerror = () => rej(r.error);
+      r.readAsArrayBuffer(file);
+    });
+
+    setStatus('PHASE:PARSE — parsing Rhino file (this can take a minute for large files)…');
+    const loader = new Rhino3dmLoader();
+    loader.setLibraryPath('https://cdn.jsdelivr.net/npm/rhino3dm@8.9.0/');
+    const object = await new Promise((res, rej) => loader.parse(buf, res, rej));
+
+    // keep only visible triangle meshes
+    const meshes = [];
+    object.updateMatrixWorld(true);
+    object.traverse(o => {
+      if (!o.isMesh || !o.visible || !o.geometry) return;
+      const g = o.geometry;
+      const count = g.index ? g.index.count : (g.attributes.position ? g.attributes.position.count : 0);
+      if (count >= 3) meshes.push(o);
+    });
+    let tris = 0;
+    const group = new THREE.Group();
+    for (const m of meshes) {
+      const g = m.geometry;
+      tris += (g.index ? g.index.count : g.attributes.position.count) / 3;
+      const clone = new THREE.Mesh(g, m.material);
+      clone.applyMatrix4(m.matrixWorld);
+      if (Array.isArray(clone.material)) clone.material.forEach(mt => mt.side = THREE.DoubleSide);
+      else if (clone.material) clone.material.side = THREE.DoubleSide;
+      group.add(clone);
+    }
+    if (meshes.length === 0 || tris === 0) {
+      fail('NO RENDER MESHES found — the file was probably saved without render meshes. In Rhino: shade the model in a Rendered/Shaded viewport, then File > Save (uncheck "Save small"). Then retry.');
+      return;
+    }
+    setStatus('PHASE:PARSED — ' + meshes.length + ' meshes, ' + Math.round(tris).toLocaleString() + ' triangles. Exporting GLB…');
+
+    // Z-up (Rhino) -> Y-up (glTF)
+    const root = new THREE.Group();
+    root.rotation.x = -Math.PI / 2;
+    root.add(group);
+    const scene = new THREE.Scene();
+    scene.add(root);
+
+    const glb = await new Promise((res, rej) =>
+      new GLTFExporter().parse(scene, res, rej, { binary: true, onlyVisible: true }));
+    setStatus('PHASE:RAWGLB — raw GLB ' + (glb.byteLength/1048576).toFixed(1) + ' MB. Optimizing…');
+
+    // --- gltf-transform optimization ---
+    const [{ WebIO }, { ALL_EXTENSIONS }, fns, mo] = await Promise.all([
+      import('https://cdn.jsdelivr.net/npm/@gltf-transform/core@4/+esm'),
+      import('https://cdn.jsdelivr.net/npm/@gltf-transform/extensions@4/+esm'),
+      import('https://cdn.jsdelivr.net/npm/@gltf-transform/functions@4/+esm'),
+      import('https://cdn.jsdelivr.net/npm/meshoptimizer@0.22.0/+esm')
+    ]);
+    const { MeshoptEncoder, MeshoptSimplifier, MeshoptDecoder } = mo;
+    await MeshoptEncoder.ready; await MeshoptSimplifier.ready;
+    const io = new WebIO()
+      .registerExtensions(ALL_EXTENSIONS)
+      .registerDependencies({ 'meshopt.encoder': MeshoptEncoder, 'meshopt.decoder': MeshoptDecoder });
+
+    async function buildOptimized(ratio, error){
+      const doc = await io.readBinary(new Uint8Array(glb));
+      const steps = [fns.dedup(), fns.flatten(), fns.join(), fns.weld()];
+      if (ratio < 1) steps.push(fns.simplify({ simplifier: MeshoptSimplifier, ratio, error }));
+      steps.push(fns.prune(), fns.dedup(), fns.meshopt({ encoder: MeshoptEncoder, level: 'medium' }));
+      await doc.transform(...steps);
+      return io.writeBinary(doc);
+    }
+
+    const TARGET = 900000;
+    let ratio = Math.min(1, TARGET / tris);
+    setStatus('PHASE:OPTIMIZE — weld/simplify (ratio ' + ratio.toFixed(2) + ')/compress — please wait…');
+    let out = await buildOptimized(ratio, 0.001);
+    if (out.byteLength > 20 * 1048576) {
+      setStatus('PHASE:OPTIMIZE2 — still ' + (out.byteLength/1048576).toFixed(1) + ' MB, compressing harder…');
+      out = await buildOptimized(Math.max(0.05, ratio * 0.4), 0.01);
+    }
+
+    lastBlob = new Blob([out], { type: 'model/gltf-binary' });
+    save(lastBlob);
+    document.getElementById('dl').style.display = 'inline-block';
+    bar.style.display = 'none';
+    setStatus('DONE — ld-villa.glb (' + (out.byteLength/1048576).toFixed(2) + ' MB) saved to your Downloads folder. Source: ' + meshes.length + ' meshes, ' + Math.round(tris).toLocaleString() + ' triangles.');
+  } catch (e) {
+    fail('conversion failed', e);
+  }
+}
+setStatus('READY — waiting for file');
+</script>
+</body>
+</html>
