@@ -175,8 +175,8 @@ async function start(file){
       if (!g.index) g = g.toNonIndexed ? g : g; // mergeVertices always returns indexed
       let indexArr = g.index.array instanceof Uint32Array ? g.index.array : new Uint32Array(g.index.array);
 
-      if (ratio < 1) {
-        const targetIdx = Math.max(384, Math.floor(indexArr.length * ratio / 3) * 3);
+      if (ratio < 1 && indexArr.length > 1500) {
+        const targetIdx = Math.min(indexArr.length, Math.max(384, Math.floor(indexArr.length * ratio / 3) * 3));
         const pos = g.attributes.position.array;
         const [simplified, err] = MeshoptSimplifier.simplify(indexArr, pos, 3, targetIdx, 0.01, []);
         log('mesh ' + mi + '/' + meshes.length + ': ' + (indexArr.length/3).toLocaleString() + ' → ' + (simplified.length/3).toLocaleString() + ' tris (err ' + err.toFixed(4) + ')');
@@ -221,7 +221,7 @@ async function start(file){
     busy = false;
   }
 }
-setStatus('READY v3 — waiting for file');
+setStatus('READY v4 — waiting for file');
 </script>
 </body>
 </html>
