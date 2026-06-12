@@ -45,7 +45,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const app = document.getElementById('app');
@@ -71,9 +70,38 @@ const sun = new THREE.DirectionalLight(0xfff4e0, 1.1);
 sun.position.set(1, 1.6, 0.8);
 scene.add(sun);
 
-const loader = new GLTFLoader();
-loader.setMeshoptDecoder(MeshoptDecoder);
-loader.load('./ld-villa.glb',
+function showError(msg){
+  const e = document.getElementById('err');
+  e.style.display = 'flex';
+  e.textContent = msg;
+  document.getElementById('overlay').classList.add('hide');
+}
+
+async function loadModel(){
+  const resp = await fetch('./ld-villa.glb.gz');
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const total = +resp.headers.get('content-length') || 0;
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let loaded = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.byteLength;
+    if (total) {
+      const p = loaded / total * 100;
+      document.getElementById('pfill').style.width = p.toFixed(0) + '%';
+      document.getElementById('ptext').textContent = 'Loading 3D model… ' + p.toFixed(0) + '%';
+    }
+  }
+  document.getElementById('ptext').textContent = 'Preparing scene…';
+  const ds = new Blob(chunks).stream().pipeThrough(new DecompressionStream('gzip'));
+  const buf = await new Response(ds).arrayBuffer();
+  return new Promise((res, rej) => new GLTFLoader().parse(buf, '', res, rej));
+}
+
+loadModel().then(
   gltf => {
     const model = gltf.scene;
     scene.add(model);
@@ -95,19 +123,9 @@ loader.load('./ld-villa.glb',
     document.getElementById('overlay').classList.add('hide');
     setTimeout(() => document.getElementById('hint').classList.add('hide'), 6000);
   },
-  xhr => {
-    if (xhr.total) {
-      const p = xhr.loaded / xhr.total * 100;
-      document.getElementById('pfill').style.width = p.toFixed(0) + '%';
-      document.getElementById('ptext').textContent = 'Loading 3D model… ' + p.toFixed(0) + '%';
-    }
-  },
   err => {
     console.error(err);
-    const e = document.getElementById('err');
-    e.style.display = 'flex';
-    e.textContent = 'Could not load the 3D model.';
-    document.getElementById('overlay').classList.add('hide');
+    showError('Could not load the 3D model.');
   }
 );
 

@@ -23,11 +23,11 @@
   <h1>L&amp;D Villa — Rhino → Web Converter</h1>
   <p>Drag &amp; drop the <b>260112_L&amp;D Villa.3dm</b> file anywhere on this page (or click below).
      It is converted locally in your browser — nothing is uploaded to a server.
-     The compressed <b>ld-villa.glb</b> downloads automatically when done.</p>
+     The compressed <b>ld-villa.glb.gz</b> downloads automatically when done.</p>
   <label class="btn">Choose .3dm file<input type="file" id="file" accept=".3dm"></label>
   <div id="bar"><div id="fill"></div></div>
-  <div id="status">STATUS: READY — waiting for file</div>
-  <button id="dl" style="display:none">Download ld-villa.glb again</button>
+  <div id="status">STATUS: BOOTING</div>
+  <button id="dl" style="display:none">Download ld-villa.glb.gz again</button>
 </div>
 <pre id="log"></pre>
 
@@ -41,6 +41,8 @@
 import * as THREE from 'three';
 import { Rhino3dmLoader } from 'three/addons/loaders/3DMLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+import { MeshoptSimplifier } from 'https://cdn.jsdelivr.net/npm/meshoptimizer@0.22.0/meshopt_simplifier.module.js';
 
 const statusEl = document.getElementById('status');
 const logEl = document.getElementById('log');
@@ -51,6 +53,7 @@ let lastBlob = null;
 function log(m){ logEl.textContent += m + '\n'; logEl.scrollTop = logEl.scrollHeight; console.log('[CONV]', m); }
 function setStatus(m){ statusEl.textContent = 'STATUS: ' + m; log(m); }
 function fail(m, e){ setStatus('ERROR: ' + m + (e ? ' :: ' + (e.message || e) : '')); console.error(e); }
+const tick = () => new Promise(r => setTimeout(r, 30)); // let UI paint between heavy steps
 
 const drop = document.getElementById('drop');
 ['dragover','dragenter'].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('hover'); }));
@@ -62,8 +65,48 @@ document.getElementById('dl').addEventListener('click', () => lastBlob && save(l
 function save(blob){
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'ld-villa.glb';
+  a.download = 'ld-villa.glb.gz';
   document.body.appendChild(a); a.click(); a.remove();
+}
+
+function cleanMaterial(mt, cache){
+  const key = mt ? mt.uuid : 'none';
+  if (cache.has(key)) return cache.get(key);
+  const hasVC = !!(mt && mt.vertexColors);
+  const out = new THREE.MeshStandardMaterial({
+    color: (mt && mt.color) ? mt.color.clone() : new THREE.Color(0xcccccc),
+    roughness: (mt && typeof mt.roughness === 'number') ? mt.roughness : 0.8,
+    metalness: (mt && typeof mt.metalness === 'number') ? mt.metalness : 0.0,
+    side: THREE.DoubleSide,
+    vertexColors: hasVC
+  });
+  if (mt && mt.transparent && mt.opacity < 1) { out.transparent = true; out.opacity = mt.opacity; }
+  if (mt && mt.name) out.name = mt.name;
+  cache.set(key, out);
+  return out;
+}
+
+// rebuild geometry keeping only vertices referenced by newIndex
+function compact(geom, newIndex){
+  const remap = new Map(); const order = [];
+  const ni = new Uint32Array(newIndex.length);
+  for (let i = 0; i < newIndex.length; i++) {
+    const v = newIndex[i];
+    let r = remap.get(v);
+    if (r === undefined) { r = order.length; remap.set(v, r); order.push(v); }
+    ni[i] = r;
+  }
+  const g2 = new THREE.BufferGeometry();
+  for (const name of Object.keys(geom.attributes)) {
+    const attr = geom.attributes[name];
+    const item = attr.itemSize, src = attr.array;
+    const dst = new src.constructor(order.length * item);
+    for (let j = 0; j < order.length; j++)
+      for (let k = 0; k < item; k++) dst[j*item+k] = src[order[j]*item+k];
+    g2.setAttribute(name, new THREE.BufferAttribute(dst, item, attr.normalized));
+  }
+  g2.setIndex(new THREE.BufferAttribute(ni, 1));
+  return g2;
 }
 
 let busy = false;
@@ -81,12 +124,11 @@ async function start(file){
       r.readAsArrayBuffer(file);
     });
 
-    setStatus('PHASE:PARSE — parsing Rhino file (this can take a minute for large files)…');
+    setStatus('PHASE:PARSE — parsing Rhino file (this can take a minute)…');
     const loader = new Rhino3dmLoader();
     loader.setLibraryPath('https://cdn.jsdelivr.net/npm/rhino3dm@8.9.0/');
     const object = await new Promise((res, rej) => loader.parse(buf, res, rej));
 
-    // keep only visible triangle meshes
     const meshes = [];
     object.updateMatrixWorld(true);
     object.traverse(o => {
@@ -95,30 +137,32 @@ async function start(file){
       const count = g.index ? g.index.count : (g.attributes.position ? g.attributes.position.count : 0);
       if (count >= 3) meshes.push(o);
     });
-    // sanitize materials: drop textures (Rhino embedded bitmaps don't survive export), keep colors
-    const matCache = new Map();
-    function cleanMaterial(mt){
-      const key = mt ? mt.uuid : 'none';
-      if (matCache.has(key)) return matCache.get(key);
-      const hasVC = !!(mt && mt.vertexColors);
-      const out = new THREE.MeshStandardMaterial({
-        color: (mt && mt.color) ? mt.color.clone() : new THREE.Color(0xcccccc),
-        roughness: (mt && typeof mt.roughness === 'number') ? mt.roughness : 0.8,
-        metalness: (mt && typeof mt.metalness === 'number') ? mt.metalness : 0.0,
-        side: THREE.DoubleSide,
-        vertexColors: hasVC
-      });
-      if (mt && mt.transparent && mt.opacity < 1) { out.transparent = true; out.opacity = mt.opacity; }
-      if (mt && mt.name) out.name = mt.name;
-      matCache.set(key, out);
-      return out;
+    if (meshes.length === 0) {
+      fail('NO RENDER MESHES found — re-save the file in Rhino with render meshes (shade a viewport first, do not use "save small"), then retry.');
+      return;
     }
-    let tris = 0;
+
+    await MeshoptSimplifier.ready;
+    const matCache = new Map();
+    let trisBefore = 0, trisAfter = 0;
     const group = new THREE.Group();
+
+    // total triangles for global ratio
     for (const m of meshes) {
       const g = m.geometry;
-      // keep only position/normal(/color when used) — drop uv etc. referencing dead textures
-      const mat = Array.isArray(m.material) ? cleanMaterial(m.material[0]) : cleanMaterial(m.material);
+      trisBefore += (g.index ? g.index.count : g.attributes.position.count) / 3;
+    }
+    const TARGET = 700000;
+    const ratio = Math.min(1, TARGET / trisBefore);
+    setStatus('PHASE:SIMPLIFY — ' + meshes.length + ' meshes, ' + Math.round(trisBefore).toLocaleString() + ' triangles → target ratio ' + ratio.toFixed(3));
+    await tick();
+
+    let mi = 0;
+    for (const m of meshes) {
+      mi++;
+      let g = m.geometry;
+      const mat = cleanMaterial(Array.isArray(m.material) ? m.material[0] : m.material, matCache);
+      // keep only position/normal(/color when used)
       for (const name of Object.keys(g.attributes)) {
         if (name === 'position' || name === 'normal') continue;
         if (name === 'color' && mat.vertexColors) continue;
@@ -126,16 +170,29 @@ async function start(file){
       }
       if (!g.attributes.normal) g.computeVertexNormals();
       g.clearGroups();
-      tris += (g.index ? g.index.count : g.attributes.position.count) / 3;
-      const clone = new THREE.Mesh(g, mat);
+      // weld duplicate vertices (identical attributes), keeps hard edges
+      g = BufferGeometryUtils.mergeVertices(g);
+      if (!g.index) g = g.toNonIndexed ? g : g; // mergeVertices always returns indexed
+      let indexArr = g.index.array instanceof Uint32Array ? g.index.array : new Uint32Array(g.index.array);
+
+      if (ratio < 1) {
+        const targetIdx = Math.max(384, Math.floor(indexArr.length * ratio / 3) * 3);
+        const pos = g.attributes.position.array;
+        const [simplified, err] = MeshoptSimplifier.simplify(indexArr, pos, 3, targetIdx, 0.01, []);
+        log('mesh ' + mi + '/' + meshes.length + ': ' + (indexArr.length/3).toLocaleString() + ' → ' + (simplified.length/3).toLocaleString() + ' tris (err ' + err.toFixed(4) + ')');
+        indexArr = simplified;
+      }
+      const cg = compact(g, indexArr);
+      trisAfter += indexArr.length / 3;
+      const clone = new THREE.Mesh(cg, mat);
       clone.applyMatrix4(m.matrixWorld);
       group.add(clone);
+      setStatus('PHASE:SIMPLIFY — mesh ' + mi + '/' + meshes.length + ' done');
+      await tick();
     }
-    if (meshes.length === 0 || tris === 0) {
-      fail('NO RENDER MESHES found — the file was probably saved without render meshes. In Rhino: shade the model in a Rendered/Shaded viewport, then File > Save (uncheck "Save small"). Then retry.');
-      return;
-    }
-    setStatus('PHASE:PARSED — ' + meshes.length + ' meshes, ' + Math.round(tris).toLocaleString() + ' triangles. Exporting GLB…');
+
+    setStatus('PHASE:EXPORT — ' + Math.round(trisAfter).toLocaleString() + ' triangles. Exporting GLB…');
+    await tick();
 
     // Z-up (Rhino) -> Y-up (glTF)
     const root = new THREE.Group();
@@ -146,51 +203,25 @@ async function start(file){
 
     const glb = await new Promise((res, rej) =>
       new GLTFExporter().parse(scene, res, rej, { binary: true, onlyVisible: true }));
-    setStatus('PHASE:RAWGLB — raw GLB ' + (glb.byteLength/1048576).toFixed(1) + ' MB. Optimizing…');
+    setStatus('PHASE:GZIP — raw GLB ' + (glb.byteLength/1048576).toFixed(1) + ' MB, compressing…');
+    await tick();
 
-    // --- gltf-transform optimization ---
-    const [{ WebIO }, { ALL_EXTENSIONS }, fns, mo] = await Promise.all([
-      import('https://cdn.jsdelivr.net/npm/@gltf-transform/core@4/+esm'),
-      import('https://cdn.jsdelivr.net/npm/@gltf-transform/extensions@4/+esm'),
-      import('https://cdn.jsdelivr.net/npm/@gltf-transform/functions@4/+esm'),
-      import('https://cdn.jsdelivr.net/npm/meshoptimizer@0.22.0/+esm')
-    ]);
-    const { MeshoptEncoder, MeshoptSimplifier, MeshoptDecoder } = mo;
-    await MeshoptEncoder.ready; await MeshoptSimplifier.ready;
-    const io = new WebIO()
-      .registerExtensions(ALL_EXTENSIONS)
-      .registerDependencies({ 'meshopt.encoder': MeshoptEncoder, 'meshopt.decoder': MeshoptDecoder });
+    const gzStream = new Blob([glb]).stream().pipeThrough(new CompressionStream('gzip'));
+    const gz = await new Response(gzStream).arrayBuffer();
 
-    async function buildOptimized(ratio, error){
-      const doc = await io.readBinary(new Uint8Array(glb));
-      const steps = [fns.dedup(), fns.flatten(), fns.join(), fns.weld()];
-      if (ratio < 1) steps.push(fns.simplify({ simplifier: MeshoptSimplifier, ratio, error }));
-      steps.push(fns.prune(), fns.dedup(), fns.meshopt({ encoder: MeshoptEncoder, level: 'medium' }));
-      await doc.transform(...steps);
-      return io.writeBinary(doc);
-    }
-
-    const TARGET = 900000;
-    let ratio = Math.min(1, TARGET / tris);
-    setStatus('PHASE:OPTIMIZE — weld/simplify (ratio ' + ratio.toFixed(2) + ')/compress — please wait…');
-    let out = await buildOptimized(ratio, 0.001);
-    if (out.byteLength > 20 * 1048576) {
-      setStatus('PHASE:OPTIMIZE2 — still ' + (out.byteLength/1048576).toFixed(1) + ' MB, compressing harder…');
-      out = await buildOptimized(Math.max(0.05, ratio * 0.4), 0.01);
-    }
-
-    lastBlob = new Blob([out], { type: 'model/gltf-binary' });
+    lastBlob = new Blob([gz], { type: 'application/gzip' });
     save(lastBlob);
     document.getElementById('dl').style.display = 'inline-block';
     bar.style.display = 'none';
-    setStatus('DONE — ld-villa.glb (' + (out.byteLength/1048576).toFixed(2) + ' MB) saved to your Downloads folder. Source: ' + meshes.length + ' meshes, ' + Math.round(tris).toLocaleString() + ' triangles.');
+    setStatus('DONE — ld-villa.glb.gz (' + (gz.byteLength/1048576).toFixed(2) + ' MB) saved to your Downloads. ' +
+      Math.round(trisBefore).toLocaleString() + ' → ' + Math.round(trisAfter).toLocaleString() + ' triangles, raw GLB ' + (glb.byteLength/1048576).toFixed(1) + ' MB.');
   } catch (e) {
     fail('conversion failed', e);
   } finally {
     busy = false;
   }
 }
-setStatus('READY v2 — waiting for file');
+setStatus('READY v3 — waiting for file');
 </script>
 </body>
 </html>
