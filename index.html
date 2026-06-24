@@ -1,166 +1,204 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>L&amp;D Villa — 3D Model</title>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>+EMA — Model Viewer</title>
+
+<!-- model-viewer handles Draco-compressed .glb automatically -->
+<script type="module" src="https://cdn.jsdelivr.net/npm/@google/model-viewer@3.5.0/dist/model-viewer.min.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500&family=Inter:wght@400;500&display=swap" rel="stylesheet" />
+
 <style>
-  html,body{margin:0;height:100%;overflow:hidden}
-  body{background:linear-gradient(180deg,#f6f6f4 0%,#e9eaec 100%);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
-  #app{position:fixed;inset:0}
-  canvas{display:block;outline:none}
-  #overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:linear-gradient(180deg,#f6f6f4,#e9eaec);transition:opacity .5s;z-index:5}
-  #overlay.hide{opacity:0;pointer-events:none}
-  #overlay h1{font-size:15px;font-weight:600;color:#5a5f66;letter-spacing:.08em;text-transform:uppercase;margin:0}
-  #pbar{width:220px;height:3px;background:#d3d5d9;border-radius:2px;overflow:hidden}
-  #pfill{height:100%;width:0%;background:#5a5f66;transition:width .15s}
-  #ptext{font-size:12px;color:#9aa0a8}
-  #hint{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);font-size:12px;color:#8b9098;background:rgba(255,255,255,.7);backdrop-filter:blur(6px);padding:7px 14px;border-radius:999px;transition:opacity 1s;z-index:4;white-space:nowrap}
-  #hint.hide{opacity:0}
-  #title{position:fixed;left:18px;top:16px;font-size:13px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#5a5f66;z-index:4}
-  #fs{position:fixed;right:14px;top:14px;width:34px;height:34px;border:0;border-radius:8px;background:rgba(255,255,255,.75);backdrop-filter:blur(6px);color:#5a5f66;cursor:pointer;z-index:4;font-size:15px;line-height:1}
-  #fs:hover{background:#fff}
-  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:#a33;font-size:14px;text-align:center;padding:20px;z-index:6}
+  :root {
+    --void:    #100E0B;   /* warm near-black gallery */
+    --void-2:  #16130F;
+    --sand:    #EDE6D8;   /* warm off-white */
+    --muted:   #8A8273;
+    --brass:   #C2A878;   /* restrained tropical-luxury accent */
+    --line:    rgba(237, 230, 216, 0.14);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+
+  body {
+    background:
+      radial-gradient(120% 90% at 50% 18%, var(--void-2) 0%, var(--void) 62%);
+    color: var(--sand);
+    font-family: "Inter", system-ui, sans-serif;
+    overflow: hidden;
+  }
+
+  .stage { position: fixed; inset: 0; }
+
+  model-viewer {
+    width: 100%;
+    height: 100%;
+    --poster-color: transparent;
+    background: transparent;
+    opacity: 0;
+    transition: opacity 900ms ease;
+  }
+  model-viewer.ready { opacity: 1; }
+
+  /* --- chrome: kept quiet so the model is the hero --- */
+
+  .mark {
+    position: fixed;
+    top: clamp(18px, 3.5vw, 34px);
+    left: clamp(18px, 3.5vw, 34px);
+    z-index: 5;
+    letter-spacing: 0.04em;
+    font-weight: 500;
+    font-size: 18px;
+  }
+  .mark .plus { color: var(--brass); }
+
+  .caption {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: clamp(20px, 4vw, 38px);
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 0 24px;
+    pointer-events: none;
+    text-align: center;
+  }
+  .caption .rule {
+    width: 46px; height: 1px;
+    background: var(--brass);
+    opacity: 0.7;
+    margin-bottom: 10px;
+  }
+  .caption .title {
+    font-family: "Cormorant Garamond", serif;
+    font-weight: 500;
+    font-size: clamp(26px, 4.4vw, 40px);
+    line-height: 1.05;
+  }
+  .caption .meta {
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* loading + error states speak in the interface's voice, no mood */
+  .state {
+    position: fixed; inset: 0;
+    z-index: 4;
+    display: grid; place-content: center;
+    text-align: center;
+    gap: 14px;
+    color: var(--muted);
+    font-size: 13px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    transition: opacity 400ms ease;
+  }
+  .state.hide { opacity: 0; pointer-events: none; }
+  .spinner {
+    width: 28px; height: 28px;
+    margin: 0 auto;
+    border: 1px solid var(--line);
+    border-top-color: var(--brass);
+    border-radius: 50%;
+    animation: spin 900ms linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+    model-viewer { transition: none; }
+  }
+
+  /* native AR button on mobile, styled to match */
+  .ar-btn {
+    position: absolute;
+    bottom: 16px; right: 16px;
+    background: rgba(16,14,11,0.6);
+    border: 1px solid var(--line);
+    color: var(--sand);
+    backdrop-filter: blur(8px);
+    font: 500 12px "Inter", sans-serif;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 10px 16px;
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  .ar-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 </style>
 </head>
 <body>
-<div id="app"></div>
-<div id="title">L&amp;D Villa</div>
-<button id="fs" title="Fullscreen">⛶</button>
-<div id="overlay">
-  <h1>L&amp;D Villa</h1>
-  <div id="pbar"><div id="pfill"></div></div>
-  <div id="ptext">Loading 3D model…</div>
-</div>
-<div id="hint">drag to orbit · scroll to zoom · right-drag to pan</div>
-<div id="err"></div>
 
-<script type="importmap">
-{"imports":{
-  "three":"https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
-  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
-}}
-</script>
-<script type="module">
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+  <div class="mark"><span class="plus">+</span>EMA</div>
 
-const app = document.getElementById('app');
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setSize(innerWidth, innerHeight);
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
-app.appendChild(renderer.domElement);
+  <div class="stage">
+    <!-- ============================================================
+         SET YOUR MODEL HERE: replace src with your optimized .glb
+         (Draco-compressed, textures resized — see the pipeline).
+         poster = optional loading image (a still render of the model).
+         ============================================================ -->
+    <model-viewer
+      id="mv"
+      src="models/villa.glb"
+      alt="Tropical residence — interactive 3D model"
+      camera-controls
+      touch-action="pan-y"
+      auto-rotate
+      auto-rotate-delay="2500"
+      rotation-per-second="14deg"
+      interaction-prompt="none"
+      shadow-intensity="1"
+      shadow-softness="0.9"
+      exposure="1.05"
+      tone-mapping="aces"
+      environment-image="neutral"
+      camera-orbit="-30deg 75deg auto"
+      min-camera-orbit="auto 25deg auto"
+      max-camera-orbit="auto 95deg auto"
+      ar
+      ar-modes="webxr scene-viewer quick-look">
 
-const scene = new THREE.Scene();
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+      <button slot="ar-button" class="ar-btn">View in your space</button>
+      <div slot="progress-bar"></div>
+    </model-viewer>
+  </div>
 
-const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 5000);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
+  <div class="caption">
+    <div class="rule"></div>
+    <div class="title">Villa — Working Title</div>
+    <div class="meta">Koh Samui &nbsp;·&nbsp; +EMA Architecture</div>
+  </div>
 
-const hemi = new THREE.HemisphereLight(0xffffff, 0xb8bcc4, 0.5);
-scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xfff4e0, 1.1);
-sun.position.set(1, 1.6, 0.8);
-scene.add(sun);
+  <div class="state" id="state">
+    <div class="spinner"></div>
+    <div id="state-text">Loading model</div>
+  </div>
 
-function showError(msg){
-  const e = document.getElementById('err');
-  e.style.display = 'flex';
-  e.textContent = msg;
-  document.getElementById('overlay').classList.add('hide');
-}
+  <script>
+    const mv = document.getElementById('mv');
+    const state = document.getElementById('state');
+    const stateText = document.getElementById('state-text');
 
-async function loadModel(){
-  const resp = await fetch('./ld-villa.glb.gz');
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  const total = +resp.headers.get('content-length') || 0;
-  const reader = resp.body.getReader();
-  const chunks = [];
-  let loaded = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    loaded += value.byteLength;
-    if (total) {
-      const p = loaded / total * 100;
-      document.getElementById('pfill').style.width = p.toFixed(0) + '%';
-      document.getElementById('ptext').textContent = 'Loading 3D model… ' + p.toFixed(0) + '%';
-    }
-  }
-  document.getElementById('ptext').textContent = 'Preparing scene…';
-  const ds = new Blob(chunks).stream().pipeThrough(new DecompressionStream('gzip'));
-  const buf = await new Response(ds).arrayBuffer();
-  return new Promise((res, rej) => new GLTFLoader().parse(buf, '', res, rej));
-}
-
-loadModel().then(
-  gltf => {
-    const model = gltf.scene;
-
-    // Rhino vertex colors are sRGB; glTF expects linear — convert so colors aren't washed out
-    model.traverse(o => {
-      if (o.isMesh && o.geometry && o.geometry.attributes.color) {
-        const a = o.geometry.attributes.color;
-        const c = new THREE.Color();
-        for (let i = 0; i < a.count; i++) {
-          c.setRGB(a.getX(i), a.getY(i), a.getZ(i)).convertSRGBToLinear();
-          a.setXYZ(i, c.r, c.g, c.b);
-        }
-        a.needsUpdate = true;
-      }
+    mv.addEventListener('load', () => {
+      mv.classList.add('ready');
+      state.classList.add('hide');
     });
-    scene.add(model);
 
-    // frame the camera on the main content (mesh with most triangles), not oversized base planes
-    let main = null, mainTris = 0;
-    model.traverse(o => {
-      if (o.isMesh && o.geometry) {
-        const t = (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3;
-        if (t > mainTris) { mainTris = t; main = o; }
-      }
+    mv.addEventListener('error', () => {
+      mv.querySelector('.spinner')?.remove();
+      state.classList.remove('hide');
+      stateText.textContent = 'Model not found — check the src path';
+      state.querySelector('.spinner')?.remove();
     });
-    const box = new THREE.Box3().setFromObject(main && mainTris > 1000 ? main : model);
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const dist = maxDim / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
-    camera.near = maxDim / 1000;
-    camera.far = maxDim * 20;
-    camera.position.set(center.x + dist * 0.9, center.y + dist * 0.45, center.z + dist * 0.9);
-    camera.updateProjectionMatrix();
-    controls.target.copy(center);
-    controls.maxDistance = dist * 4;
-    controls.update();
-
-    document.getElementById('overlay').classList.add('hide');
-    setTimeout(() => document.getElementById('hint').classList.add('hide'), 6000);
-  },
-  err => {
-    console.error(err);
-    showError('Could not load the 3D model.');
-  }
-);
-
-document.getElementById('fs').addEventListener('click', () => {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else document.documentElement.requestFullscreen();
-});
-
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
-
-renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
-</script>
+  </script>
 </body>
 </html>
